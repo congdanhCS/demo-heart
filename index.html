@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HEART</title>
+    <style>
+        body { 
+            margin: 0; overflow: hidden; background-color: #000; 
+            font-family: 'Arial Black', sans-serif;
+        }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
+        #loading {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); color: white; z-index: 10;
+        }
+        .rainbow-text-container {
+            position: absolute; top: 5%; width: 100%; text-align: center;
+            z-index: 5; pointer-events: none;
+        }
+        .rainbow-text {
+            font-size: 80px; font-weight: 900; letter-spacing: 5px;
+            background-image: linear-gradient(to right, red, orange, yellow, lime, blue, indigo, violet);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text; color: transparent;
+            filter: drop-shadow(0 0 10px rgba(255,255,255,0.3));
+            animation: floatAnimation 3s ease-in-out infinite;
+        }
+        @keyframes floatAnimation {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading........</div>
+
+    <div class="rainbow-text-container">
+        <div class="rainbow-text"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.002);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 50); 
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Mảng chứa 5 lớp trái tim gốc
+        const mainHeartMeshes = []; 
+        
+        // Mảng chứa các lớp "Bóng ma" để làm hiệu ứng lan tỏa
+        const rippleMeshes = [];
+        const MAX_RIPPLES = 3; // Số lượng sóng tối đa xuất hiện cùng lúc
+
+        // Kích thước gốc
+        const BASE_SCALE = { x: 1.2, y: 1.4, z: 1.45 };
+
+        //NHỊP TIM (BPM)
+        const BPM = 70;
+        const BEAT_INTERVAL = 60000 / BPM; // ~857ms mỗi nhịp
+        let lastBeatTime = 0;
+
+        //HÀM TẠO MÀU CẦU VỒNG (Dùng chung)
+        function getRainbowGeometry(data) {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const colorObj = new THREE.Color();
+
+            data.forEach(p => {
+                positions.push(p.x, p.y, p.z);
+                const angle = Math.atan2(p.z, p.x); 
+                let hue = (angle + Math.PI) / (2 * Math.PI); 
+                hue += (p.y / 25); 
+                colorObj.setHSL(Math.abs(hue % 1), 1.0, 0.6);
+                colors.push(colorObj.r, colorObj.g, colorObj.b);
+            });
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            return geometry;
+        }
+
+        //HÀM TẠO TRÁI TIM CHÍNH (CỐ ĐỊNH)
+        function createMainHeartLayer(data) {
+            const geometry = getRainbowGeometry(data);
+            const material = new THREE.PointsMaterial({
+                size: 0.25, vertexColors: true, transparent: true, opacity: 0.9,
+                depthWrite: false, blending: THREE.AdditiveBlending
+            });
+
+            const mesh = new THREE.Points(geometry, material);
+            mesh.rotation.x = -Math.PI / 2;
+            mesh.scale.set(BASE_SCALE.x, BASE_SCALE.y, BASE_SCALE.z);
+            
+            scene.add(mesh);
+            mainHeartMeshes.push(mesh);
+        }
+
+        //HÀM KHỞI TẠO CÁC LỚP RIPPLE (ẨN ĐI CHỜ KÍCH HOẠT)
+        // dùng dữ liệu của trái tim to nhất (layer 0) để làm sóng lan tỏa
+        function initRippleSystem(dataOfBiggestHeart) {
+            const geometry = getRainbowGeometry(dataOfBiggestHeart);
+            
+            for (let i = 0; i < MAX_RIPPLES; i++) {
+                const material = new THREE.PointsMaterial({
+                    size: 0.25, vertexColors: true, transparent: true, opacity: 0, // Ban đầu ẩn
+                    depthWrite: false, blending: THREE.AdditiveBlending
+                });
+
+                const mesh = new THREE.Points(geometry, material);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.visible = false; 
+                
+                scene.add(mesh);
+                
+                mesh.userData = { 
+                    active: false, 
+                    life: 0 
+                };
+                
+                rippleMeshes.push(mesh);
+            }
+        }
+
+        function triggerRipple() {
+            const ripple = rippleMeshes.find(m => !m.userData.active);
+            
+            if (ripple) {
+                ripple.visible = true;
+                ripple.userData.active = true;
+                ripple.userData.life = 1.0;
+                
+                ripple.scale.set(BASE_SCALE.x, BASE_SCALE.y, BASE_SCALE.z);
+                ripple.material.opacity = 0.6;
+            }
+        }
+
+        const fileCount = 5; 
+        const loadPromises = [];
+        for (let i = 0; i < fileCount; i++) {
+            loadPromises.push(fetch(`data/heart_data_${i}.json`).then(r => r.json()));
+        }
+
+        Promise.all(loadPromises)
+            .then(results => {
+                document.getElementById('loading').style.display = 'none';
+                
+                results.forEach(data => createMainHeartLayer(data));
+
+                initRippleSystem(results[0]);
+
+                animate();
+            })
+            .catch(err => {
+                console.error(err);
+                document.getElementById('loading').innerText = "Lỗi tải dữ liệu!";
+            });
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const now = Date.now();
+            let beatScaleBonus = 0;
+
+            // NHỊP ĐẬP (70 BPM)
+            if (now - lastBeatTime > BEAT_INTERVAL) {
+                lastBeatTime = now;
+                triggerRipple(); // Bắn ra một vòng sóng
+            }
+
+            // hiệu ứng co bóp nhẹ cho trái tim chính
+            // 150ms đầu sau nhịp đập, tim chính sẽ phồng lên xíu
+            const timeSinceBeat = now - lastBeatTime;
+            if (timeSinceBeat < 150) {
+                beatScaleBonus = 0.05 * Math.sin((timeSinceBeat / 150) * Math.PI);
+            }
+
+            mainHeartMeshes.forEach(mesh => {
+                mesh.rotation.z += 0.005; // Xoay chậm hơn
+                
+                mesh.scale.set(
+                    BASE_SCALE.x + beatScaleBonus,
+                    BASE_SCALE.y + beatScaleBonus,
+                    BASE_SCALE.z + beatScaleBonus
+                );
+            });
+
+            rippleMeshes.forEach(mesh => {
+                // Đồng bộ góc xoay với trái tim chính
+                if (mainHeartMeshes.length > 0) {
+                    mesh.rotation.z = mainHeartMeshes[0].rotation.z;
+                }
+
+                if (mesh.userData.active) {
+                    mesh.scale.multiplyScalar(1.015); // Tốc độ lan tỏa
+                    
+                    mesh.material.opacity -= 0.015;  
+                    
+                    if (mesh.material.opacity <= 0) {
+                        mesh.userData.active = false;
+                        mesh.visible = false;
+                    }
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
